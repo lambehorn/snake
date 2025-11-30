@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 from tkinter import Canvas
 import random
+import heapq
 
 # Глобальные настройки
 settings = {
@@ -39,6 +40,124 @@ class Snake:
     def shrink(self):
         if len(self.body) > 1:
             self.body.pop()
+
+def find_path_to_food(snake, food, obstacles, cols, rows):
+    """Находит оптимальный путь к еде используя алгоритм A*"""
+    if not food:
+        return None
+    
+    start = snake.body[0]
+    goal = food
+    
+    def heuristic(pos):
+        """Манхэттенское расстояние"""
+        return abs(pos[0] - goal[0]) + abs(pos[1] - goal[1])
+    
+    def get_neighbors(pos):
+        """Возвращает соседние клетки"""
+        x, y = pos
+        neighbors = []
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < cols and 0 <= ny < rows:
+                neighbors.append((nx, ny))
+        return neighbors
+    
+    # Множество всех препятствий (тела всех змеек)
+    obstacle_set = set()
+    for obstacle in obstacles:
+        obstacle_set.update(obstacle)
+    
+    # A* алгоритм
+    open_set = [(0, start)]
+    came_from = {}
+    g_score = {start: 0}
+    f_score = {start: heuristic(start)}
+    
+    while open_set:
+        current = heapq.heappop(open_set)[1]
+        
+        if current == goal:
+            # Восстанавливаем путь
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            path.append(start)
+            path.reverse()
+            if len(path) > 1:
+                return path[1]  # Возвращаем следующую позицию от головы
+            return None
+        
+        for neighbor in get_neighbors(current):
+            if neighbor in obstacle_set:
+                continue
+            
+            tentative_g_score = g_score[current] + 1
+            
+            if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g_score
+                f_score[neighbor] = tentative_g_score + heuristic(neighbor)
+                heapq.heappush(open_set, (f_score[neighbor], neighbor))
+    
+    # Если путь не найден, возвращаем безопасное направление
+    return None
+
+def get_bot_direction(snake, food, all_snakes, cols, rows):
+    """Определяет направление для бота"""
+    if not food:
+        return snake.direction
+    
+    # Получаем все препятствия (тела всех змеек)
+    obstacles = [s.body for s in all_snakes]
+    
+    # Пытаемся найти путь к еде
+    next_pos = find_path_to_food(snake, food, obstacles, cols, rows)
+    
+    if next_pos:
+        head_x, head_y = snake.body[0]
+        dx = next_pos[0] - head_x
+        dy = next_pos[1] - head_y
+        return (dx, dy)
+    
+    # Если путь не найден, используем жадный алгоритм
+    head_x, head_y = snake.body[0]
+    fx, fy = food
+    
+    # Пробуем двигаться к еде, избегая препятствий
+    directions = [(0, -1), (0, 1), (-1, 0), (1, 0)]  # up, down, left, right
+    best_dir = snake.direction
+    best_score = float('inf')
+    
+    for dx, dy in directions:
+        # Не разворачиваемся назад
+        if (dx, dy) == (-snake.direction[0], -snake.direction[1]):
+            continue
+        
+        nx, ny = head_x + dx, head_y + dy
+        
+        # Проверяем границы
+        if nx < 0 or nx >= cols or ny < 0 or ny >= rows:
+            continue
+        
+        # Проверяем препятствия
+        is_obstacle = False
+        for obstacle in obstacles:
+            if (nx, ny) in obstacle:
+                is_obstacle = True
+                break
+        
+        if is_obstacle:
+            continue
+        
+        # Вычисляем расстояние до еды
+        distance = abs(nx - fx) + abs(ny - fy)
+        if distance < best_score:
+            best_score = distance
+            best_dir = (dx, dy)
+    
+    return best_dir
 
 def open_game_window(mode="friend"):
     game_window = tk.Toplevel(root)
@@ -110,7 +229,8 @@ def open_game_window(mode="friend"):
         snakes = [snake1, snake2]
     else:
         snake1 = Snake((5, rows // 2), (1, 0), "#FF6B9D")
-        snakes = [snake1]
+        snake2 = Snake((cols - 6, rows // 2), (-1, 0), "#4ECDC4")  # Бот
+        snakes = [snake1, snake2]
         # Скрываем счет второго игрока в режиме против компьютера
         score_label2.grid_remove()
         score_value2.grid_remove()
@@ -121,20 +241,15 @@ def open_game_window(mode="friend"):
         """Перезапускает игру после столкновения"""
         nonlocal food
         # Сбрасываем змейки в начальное положение
-        if mode == "friend":
-            snake1.body = [(5, rows // 2)]
-            snake1.direction = (1, 0)
-            snake1.next_direction = (1, 0)
-            snake1.score = 0
+        snake1.body = [(5, rows // 2)]
+        snake1.direction = (1, 0)
+        snake1.next_direction = (1, 0)
+        snake1.score = 0
+        if len(snakes) > 1:
             snake2.body = [(cols - 6, rows // 2)]
             snake2.direction = (-1, 0)
             snake2.next_direction = (-1, 0)
             snake2.score = 0
-        else:
-            snake1.body = [(5, rows // 2)]
-            snake1.direction = (1, 0)
-            snake1.next_direction = (1, 0)
-            snake1.score = 0
         
         # Сбрасываем счет на экране
         score_value1.config(text="0")
@@ -216,6 +331,12 @@ def open_game_window(mode="friend"):
 
     def game_loop():
         nonlocal food
+        
+        # Управление ботом (в режиме против компьютера)
+        if mode == "computer" and len(snakes) > 1:
+            bot_direction = get_bot_direction(snake2, food, snakes, cols, rows)
+            if bot_direction:
+                snake2.next_direction = bot_direction
         
         # Двигаем змейки
         collision_occurred = False
